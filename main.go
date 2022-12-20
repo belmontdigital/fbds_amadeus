@@ -7,14 +7,21 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const ()
 
 type (
-	AuthTokenRequest struct {
+	Fixturer interface {
+		FixturePath() string
+		Bytes() []byte
+	}
+
+	CreateAuthToken struct {
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 		Username     string `json:"username"`
@@ -29,20 +36,37 @@ type (
 		TokenType    string      `json:"token_type"`
 	}
 
-	RefreshAuthTokenRequest struct {
+	RefreshAuthToken struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	FunctionRoomGroupRequest struct {
-		LocationIDs  []string `json:"LocationIds"`
-		RecordStatus string   `json:"RecordStatus"`
+	ConsumerCache struct {
+		Data      []byte    `json:"-"`
+		UpdatedAt time.Time `json:"-"`
 	}
 
-	DefiniteEventSearchRequest struct {
+	GetLocations struct {
+		ConsumerCache
+	}
+	GetLocationsByID struct {
+		ConsumerCache
+	}
+	GetLocationsByExternalID struct {
+		ConsumerCache
+	}
+
+	GetFunctionRoomGroups struct {
+		LocationIds  []string `json:"LocationIds"`
+		RecordStatus string   `json:"-"`
+		ConsumerCache
+	}
+
+	GetDefiniteEvents struct {
 		BookingEventDateTimeBegin string `json:"BookingEventDateTimeBegin"`
 		BookingEventDateTimeEnd   string `json:"BookingEventDateTimeEnd"`
 		LocationId                string `json:"LocationId"`
+		ConsumerCache
 	}
 
 	ErrorResponse struct {
@@ -73,6 +97,7 @@ type (
 		TimeZone                           string      `json:"TimeZone"`
 		WebSiteUrl                         string      `json:"WebSiteUrl"`
 		Id                                 string      `json:"Id"`
+		ExternalId                         string      `json:"ExternalId"`
 	}
 
 	FunctionRoomGroupsResponse struct {
@@ -197,47 +222,28 @@ func main() {
 		// You can put any code you want to run on a timer here
 		log.Println("Refreshing token")
 
-		vAuthTokenResponse = refreshAccessToken(vAuthTokenResponse.RefreshToken)
-
-		log.Println("Refreshed auth token:" + vAuthTokenResponse.AuthToken)
-	}
-}
-
-func authenticate() (authTokenResponse AuthTokenResponse) {
-
-	authRequest := AuthTokenRequest{
-		ClientID:     os.Getenv("AHWS_CLIENT_ID"),
-		ClientSecret: os.Getenv("AHWS_CLIENT_SECRET"),
-		Username:     os.Getenv("AHWS_USERNAME"),
-		Password:     os.Getenv("AHWS_PASSWORD"),
-		GrantType:    "password",
-	}
-
-	var responseData AuthTokenResponse
-
-	// Encode the dictionary as JSON.
-	jsonRequestBody, err := json.Marshal(authRequest)
-	LogError(err)
-
-	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kAccessTokenPath, jsonRequestBody))
-
+func (authRequest CreateAuthToken) Do() (responseData AuthTokenResponse) {
+	body := authRequest.Bytes()
 	LogError(json.Unmarshal(body, &responseData))
 	LogPrettyPrintJSON(responseData)
 
 	return responseData
 }
 
-func refreshAccessToken(refreshAccessToken string) (authTokenResponse AuthTokenResponse) {
-	refreshTokenRequest := RefreshAuthTokenRequest{
-		GrantType:    "refresh_token",
-		RefreshToken: refreshAccessToken,
-	}
-
-	// Encode the dictionary as JSON.
-	jsonRequestBody, err := json.Marshal(refreshTokenRequest)
+func (authRequest CreateAuthToken) Bytes() []byte {
+	jsonRequestBody, err := json.Marshal(authRequest)
 	LogError(err)
 
-	var responseData AuthTokenResponse
+	return doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kAccessTokenPath, jsonRequestBody))
+}
+
+func (CreateAuthToken) FixturePath() string {
+	return "fixtures/authtoken.json"
+}
+
+func (refreshTokenRequest RefreshAuthToken) Do() (responseData AuthTokenResponse) {
+	jsonRequestBody, err := json.Marshal(refreshTokenRequest)
+	LogError(err)
 
 	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kRefreshAccessTokenPath, jsonRequestBody))
 
@@ -247,80 +253,133 @@ func refreshAccessToken(refreshAccessToken string) (authTokenResponse AuthTokenR
 	return responseData
 }
 
-func GetLocations() {
-	var responseData []LocationResponse
-
-	body := doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationSearchPath))
-
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
-}
-
-func GetLocationsID() {
-
-	var responseData []LocationResponse
-	body := doHTTPRequest(newHTTPGetRequest(kAHWSBaseURL + kLocationsByID))
-
+func (r GetLocations) Do() (responseData []LocationResponse) {
+	body := r.Bytes()
 	LogError(json.Unmarshal(body, &responseData))
 	LogPrettyPrintJSON(responseData)
 
+	return responseData
 }
 
-func GetLocationsByExternalID() {
-
-	var responseData []LocationResponse
-	body := doHTTPRequest(newHTTPGetRequest(kAHWSBaseURL + kLocationsByExternalID))
-
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
+func (r GetLocations) Bytes() []byte {
+	return r.bytes()
 }
 
-func GetFunctionRoomGroup(IDs []string, recordStatus string) {
-
-	functionRoomGroupsRequest := FunctionRoomGroupRequest{
-		IDs,
-		recordStatus,
+func (r *GetLocations) bytes() []byte {
+	if len(r.Data) != 0 {
+		return r.Data
 	}
 
-	jsonRequestBody, err := json.Marshal(functionRoomGroupsRequest)
-	LogError(err)
+	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationSearchPath))
+	return r.Data
+}
 
+func (GetLocations) FixturePath() string {
+	return "fixtures/locations.json"
+}
+
+func (r GetLocationsByID) Do() {
+	var responseData []LocationResponse
+	body := r.Bytes()
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+}
+
+func (r GetLocationsByID) Bytes() []byte {
+	return r.bytes()
+}
+
+func (r *GetLocationsByID) bytes() []byte {
+	// TODO: Implement proper caching here
+	if len(r.Data) != 0 {
+		return r.Data
+	}
+
+	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationsByID))
+	return r.Data
+}
+
+func (GetLocationsByID) FixturePath() string {
+	return "fixtures/locationsbyid.json"
+}
+
+func (r GetLocationsByExternalID) Do() {
+	var responseData []LocationResponse
+	body := r.Bytes()
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+}
+
+func (r GetLocationsByExternalID) Bytes() []byte {
+	return r.bytes()
+}
+
+func (r *GetLocationsByExternalID) bytes() []byte {
+	// TODO: Implement proper caching here
+	if len(r.Data) != 0 {
+		return r.Data
+	}
+
+	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationsByExternalID))
+	return r.Data
+}
+
+func (GetLocationsByExternalID) FixturePath() string {
+	return "fixtures/locationsbyexternalid.json"
+}
+
+func (f GetFunctionRoomGroups) Do() {
 	var responseData FunctionRoomGroupsResponse
-
-	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kFunctionRoomGroupSearchPath, jsonRequestBody))
-
-	LogError(json.Unmarshal(body, &responseData))
+	LogError(json.Unmarshal(f.Bytes(), &responseData))
 	LogPrettyPrintJSON(responseData)
 }
 
-func GetBookingEventDetails(definiteEventSearchRequest DefiniteEventSearchRequest) {
+func (r GetFunctionRoomGroups) Bytes() []byte {
+	return r.bytes()
+}
 
-	jsonRequestBody, err := json.Marshal(definiteEventSearchRequest)
+func (r *GetFunctionRoomGroups) bytes() []byte {
+	// TODO: Implement proper caching here
+	jsonRequestBody, err := json.Marshal(r)
 	LogError(err)
 
-	var responseData DefiniteEventSearchResponse
+	if len(r.Data) != 0 {
+		return r.Data
+	}
 
-	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kDefiniteEventSearchPath, jsonRequestBody))
-
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
-
+	r.Data = doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kFunctionRoomGroupSearchPath, jsonRequestBody))
+	return r.Data
 }
 
-// func SetHeadersForReq() {
-// 	pc, _, _, _ := runtime.Caller(1)
-// 	callerMethod := runtime.FuncForPC(pc).Name()
+func (f GetFunctionRoomGroups) FixturePath() string {
+	return "fixtures/functionroomgroups.json"
+}
 
-// 	log.Println("callerMethod = " + callerMethod)
+func (r GetDefiniteEvents) Do() {
+	var responseData DefiniteEventSearchResponse
+	LogError(json.Unmarshal(r.Bytes(), &responseData))
+	LogPrettyPrintJSON(responseData)
+}
 
-// 	switch callerMethod {
-// 	case "GetLocations":
+func (r GetDefiniteEvents) Bytes() []byte {
+	return r.bytes()
+}
 
-// 	}
-// }
+func (r *GetDefiniteEvents) bytes() []byte {
+	jsonRequestBody, err := json.Marshal(r)
+	LogError(err)
+
+	// TODO: Implement proper caching here
+	if len(r.Data) != 0 {
+		return r.Data
+	}
+
+	return doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kDefiniteEventSearchPath, jsonRequestBody))
+}
 
 func LogPrettyPrintJSON(data interface{}) {
-
 	b, err := json.MarshalIndent(data, "", "    ")
 
 	// Marshal the map back into a JSON byte slice with indentation
@@ -388,6 +447,47 @@ func doHTTPRequest(req *http.Request) (body []byte) {
 	return (body)
 }
 
+func genFixtures() {
+	// populateFixture(authTokenRequest)
+
+	// Populate location fixture
+	locationClient := GetLocations{}
+	populateFixture(locationClient)
+
+	// Decode location data for parsing
+	var locations []LocationResponse
+	locationData := locationClient.Bytes()
+
+	json.Unmarshal(locationData, &locations)
+
+	// Populate function room group fixture for all locations
+	var locationIds []string
+	for _, location := range locations {
+		locationIds = append(locationIds, location.Id)
+	}
+
+	functionRoomGroups := GetFunctionRoomGroups{
+		LocationIds: locationIds,
+	}
+	populateFixture(functionRoomGroups)
+}
+
+func populateFixture(fixturer Fixturer) {
+	resp := fixturer.Bytes()
+
+	var out bytes.Buffer
+	err := json.Indent(&out, resp, "", "    ")
+	LogError(err)
+
+	log.Println("Populating fixture:", fixturer.FixturePath(), "of size:", len(resp))
+
+	f, err := os.Create(fixturer.FixturePath())
+	LogError(err)
+
+	f.Write(out.Bytes())
+	log.Println("Successfully wrote fixture:", fixturer.FixturePath())
+}
+
 // func handleHTTPCode(statusCode int) {
 
 // 	switch statusCode {
@@ -412,4 +512,3 @@ func doHTTPRequest(req *http.Request) (body []byte) {
 // q.Add("subscription-key", ocpApimSubscriptionKey)
 // req.URL.RawQuery = q.Encode()
 // fmt.Println(req.URL)
-
