@@ -1,0 +1,110 @@
+<!---
+Fontainebleau Convention Digital Signage Single Room
+Amadeus Project December 2022
+--->
+
+<!DOCTYPE html>
+<html>
+<head>
+<title>Conference Title Screen</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Mukta:wght@200;400;600&display=swap" rel="stylesheet">
+
+<!--- CSS --->
+<style>
+	
+:root {
+	--default-text-color: #a8a9ab;
+	--default-white: #ffffff;
+	--pink-color: #eb0292;
+	--default-black: #000000;
+	--dark-grey: #58595b;
+}	
+
+html, body{ font-family: 'Mukta', sans-serif; color: var(--default-text-color); font-size: 100%; margin: 0; padding: 0; background-color: var(--default-black);}
+
+h1{ color: var(--default-white); font-size: 7.3125rem; line-height: 125%; margin: 0; padding: 0;}
+h2{ color: var(--pink-color); font-size: 5.75rem; line-height: 125%; text-transform: uppercase; margin: 0; padding: 0;}
+
+h1 + h2{ margin-top: 3rem;}
+
+section.title_section{ padding: 4rem 0; border-left: solid 1rem var(--pink-color); position: fixed; top: 10vh; width: 100%; box-sizing: border-box;}
+
+footer{ background: var(--dark-grey); padding: 1rem 0; position: fixed; bottom: 0; left: 0; z-index: 2; width: 100%;}
+.footer_date_time span{ display: inline-block; vertical-align: middle; font-size: 2.8125rem; color: var(--default-text-color); text-transform: uppercase;}
+.footer_date_time span.divider{ padding: 0 1.5rem;}
+
+.wrapper{ margin: 0 auto; width: calc(100% - 4rem);}
+
+.flex{ display: flex;}
+
+@media all and (max-width: 1024px){
+	section.title_section{ position: relative; top: auto; margin-top: 3rem;}
+	footer{ position: relative; bottom: auto; left: auto; margin-top: 3rem;}
+	
+	h1{ font-size: 4rem;}
+	h2{ font-size: 2rem;}
+	.footer_date_time span{ font-size: 1rem;}
+}
+
+</style>
+
+</head>
+
+<body>
+	
+	<main>
+		<section class="title_section">
+			<div class="wrapper">
+				<h1>{{.EventName}}</h1>
+				<h2>{{.StartTime}} - {{.EndTime}}</h2>
+			</div><!---end wrapper--->
+		</section>
+	</main>
+	
+	<!--- Time and Date Heading --->
+	<footer>
+		<div class="wrapper flex">
+			<div class="footer_date_time">
+				<span id="time">11:52 AM</span><span class="divider">|</span><span id="date">Thursday December 10, 2022</span>
+			</div>
+		</div> <!--- end wrapper --->
+	</footer>
+<script>
+	function showTime() {
+		let time = new Date();
+		let hour = time.getHours();
+		let min = time.getMinutes();
+		// let sec = time.getSeconds();
+		am_pm = "AM";
+	
+		if (hour > 12) {
+			hour -= 12;
+			am_pm = "PM";
+		}
+		if (hour == 0) {
+			hr = 12;
+			am_pm = "AM";
+		}
+	
+		hour = hour < 10 ? "0" + hour : hour;
+		min = min < 10 ? "0" + min : min;
+		// sec = sec < 10 ? "0" + sec : sec;
+	
+		let currentTime = hour + ":"
+			+ min + " " + am_pm; // + ":" + sec + " " + am_pm;
+	
+		document.getElementById("time").innerHTML = currentTime;
+	}
+
+	window.onload = function() {
+		const today = new Date();
+		// return date.toLocaleDateString(locale, { weekday: 'long' });   
+		document.getElementById("date").innerHTML = today.toDateString();
+		setInterval(showTime, 1000);
+		showTime();
+	};
+</script>
+</body>
+
+</html>

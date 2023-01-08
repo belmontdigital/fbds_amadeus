@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,11 @@ type (
 	}
 
 	ScheduleScreen map[string][]DefiniteEventSearchResponse
+	CoverScreen    struct {
+		EventName string
+		StartTime string
+		EndTime   string
+	}
 
 	Events struct {
 		FunctionRoomGroup FunctionRoomGroupsResponse
@@ -228,17 +234,92 @@ func main() {
 	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		http.HandleFunc("/view/cover", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, "cover_screen.html")
+			if !r.URL.Query().Has("location-id") || !r.URL.Query().Has("room-id") || !r.URL.Query().Has("group-id") {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("location-id, group-id, and room-id must be provided"))
+				return
+			}
+
+			tmpl, err := template.ParseFiles("cover_screen.html.template")
+			LogError(err)
+
+			cs := CoverScreen{}
+			definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
+				LocationId:                r.URL.Query().Get("location-id"),
+				FunctionRoomGroupId:       r.URL.Query().Get("group-id"),
+				BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
+				BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
+			})
+			for _, event := range definiteEvents {
+				if event.ExternalFunctionRoomId != r.URL.Query().Get("room-id") {
+					continue
+				}
+
+				// NOTE: We don't know what tz... Defaults to EST, can accept the tz from the client if required.
+				loc, err := time.LoadLocation("EST")
+				LogError(err)
+
+				now := time.Now().In(loc)
+
+				re := regexp.MustCompile("T(.*:.*):.*$")
+				startTime := re.FindStringSubmatch(event.StartDateTime)
+				endTime := re.FindStringSubmatch(event.EndDateTime)
+
+				startTimeSlice := strings.Split(startTime[1], ":")
+				startTimeHour, _ := strconv.Atoi(startTimeSlice[0])
+				startTimeMinute, _ := strconv.Atoi(startTimeSlice[1])
+
+				endTimeSlice := strings.Split(endTime[1], ":")
+				endTimeHour, _ := strconv.Atoi(endTimeSlice[0])
+				endTimeMinute, _ := strconv.Atoi(endTimeSlice[1])
+
+				startDate := time.Date(
+					now.Year(),
+					now.Month(),
+					now.Day(), startTimeHour, startTimeMinute, 0, 0, loc)
+
+				endDate := time.Date(
+					now.Year(),
+					now.Month(),
+					now.Day(), endTimeHour, endTimeMinute, 0, 0, loc)
+
+				currentTime := now
+
+				// NOTE: For manipulating time for testing.
+				// currentTime = time.Date(
+				// 	time.Now().Year(),
+				// 	time.Now().Month(),
+				// 	time.Now().Day(), 00, 01, 0, 0, loc)
+
+				if startDate.Unix() <= currentTime.Unix() && currentTime.Unix() < endDate.Unix() {
+					cs.StartTime = startTime[1]
+					cs.EndTime = endTime[1]
+					cs.EventName = event.Name
+				}
+			}
+
+			if cs.EventName == "" {
+				cs.EventName = "No Current Event"
+			}
+
+			err = tmpl.Execute(w, cs)
+			LogError(err)
 		})
 
 		http.HandleFunc("/view/schedule", func(w http.ResponseWriter, r *http.Request) {
-			var locationIDs []string
-			locations := GetLocations()
-			for _, location := range locations {
-				locationIDs = append(locationIDs, location.Id)
+			// var locationIDs []string
+			// locations := GetLocations()
+			// for _, location := range locations {
+			// 	locationIDs = append(locationIDs, location.Id)
+			// }
+			if !r.URL.Query().Has("location-id") {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("location-id must be provided"))
+				return
 			}
+
 			functionRoomGroups := GetFunctionRoomGroups(FunctionRoomGroupRequest{
-				LocationIDs:  locationIDs,
+				LocationIDs:  []string{r.URL.Query().Get("location-id")},
 				RecordStatus: "Active",
 			})
 
@@ -260,7 +341,6 @@ func main() {
 					event.StartDateTime = startTime[1]
 					event.EndDateTime = endTime[1]
 					e = append(e, event)
-					log.Println(event.StartDateTime)
 				}
 				sort.Slice(e, func(i, j int) bool {
 					return e[i].StartDateTime < e[j].StartDateTime
