@@ -2,26 +2,29 @@ package main
 
 import (
 	"bytes"
+	"encoding/gob"
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/patrickmn/go-cache"
 )
 
 const ()
 
 type (
-	Fixturer interface {
-		FixturePath() string
-		Bytes() []byte
-	}
-
-	CreateAuthToken struct {
+	AuthTokenRequest struct {
 		ClientID     string `json:"client_id"`
 		ClientSecret string `json:"client_secret"`
 		Username     string `json:"username"`
@@ -34,39 +37,37 @@ type (
 		ExpiresIn    json.Number `json:"expires_in"`
 		RefreshToken string      `json:"refresh_token"`
 		TokenType    string      `json:"token_type"`
+		ExpiresAt    int64       `json:"-"`
 	}
 
-	RefreshAuthToken struct {
+	ScheduleScreen map[string][]DefiniteEventSearchResponse
+
+	Events struct {
+		FunctionRoomGroup FunctionRoomGroupsResponse
+		DefiniteEvent     DefiniteEventSearchResponse
+	}
+
+	RefreshAuthTokenRequest struct {
 		GrantType    string `json:"grant_type"`
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	ConsumerCache struct {
-		Data      []byte    `json:"-"`
-		UpdatedAt time.Time `json:"-"`
+	FunctionRoomGroupRequest struct {
+		LocationIDs  []string `json:"LocationIds"`
+		RecordStatus string   `json:"-"` // TODO: add note
 	}
 
-	GetLocations struct {
-		ConsumerCache
-	}
-	GetLocationsByID struct {
-		ConsumerCache
-	}
-	GetLocationsByExternalID struct {
-		ConsumerCache
-	}
-
-	GetFunctionRoomGroups struct {
-		LocationIds  []string `json:"LocationIds"`
-		RecordStatus string   `json:"-"`
-		ConsumerCache
-	}
-
-	GetDefiniteEvents struct {
+	DefiniteEventSearchRequest struct {
 		BookingEventDateTimeBegin string `json:"BookingEventDateTimeBegin"`
 		BookingEventDateTimeEnd   string `json:"BookingEventDateTimeEnd"`
+		FunctionRoomGroupId       string `json:"FunctionRoomGroupId"`
 		LocationId                string `json:"LocationId"`
-		ConsumerCache
+	}
+
+	DefiniteEventCacheSearchResults struct {
+		BookingEventDateTime string `-`
+		LocationId           string `-`
+		Found                bool
 	}
 
 	ErrorResponse struct {
@@ -97,7 +98,6 @@ type (
 		TimeZone                           string      `json:"TimeZone"`
 		WebSiteUrl                         string      `json:"WebSiteUrl"`
 		Id                                 string      `json:"Id"`
-		ExternalId                         string      `json:"ExternalId"`
 	}
 
 	FunctionRoomGroupsResponse struct {
@@ -183,211 +183,333 @@ type (
 )
 
 const (
-	kAHWSBaseURL                 string = "https://api-release.amadeus-hospitality.com"
-	kAuthPath                    string = "/release/2.0/OAuth2"
-	kAccessTokenPath             string = kAuthPath + "/AccessToken"
-	kRefreshAccessTokenPath      string = kAuthPath + "/RefreshAccessToken"
-	kAPIPath                     string = "/api/release"
-	kLocationSearchPath          string = kAPIPath + "/Location/Search"
-	kLocationsByExternalID       string = kAPIPath + "/location/ExternalLocationId"
-	kLocationsByID               string = kAPIPath + "/location/LocationId"
-	kFunctionRoomGroupSearchPath string = kAPIPath + "/functionroomgroup/Search"
-	kFunctionRoomsSearchPath     string = kAPIPath + "/functionroom/Search"
-	kDefiniteEventSearchPath     string = kAPIPath + "/bookingEvent/DefiniteEventSearch"
+	kAHWSBaseURL                 string        = "https://api-release.amadeus-hospitality.com"
+	kAuthPath                    string        = "/release/2.0/OAuth2"
+	kAccessTokenPath             string        = kAuthPath + "/AccessToken"
+	kRefreshAccessTokenPath      string        = kAuthPath + "/RefreshAccessToken"
+	kAPIPath                     string        = "/api/release"
+	kLocationSearchPath          string        = kAPIPath + "/Location/Search"
+	kLocationsByExternalID       string        = kAPIPath + "/location/ExternalLocationId"
+	kLocationsByID               string        = kAPIPath + "/location/LocationId"
+	kFunctionRoomGroupSearchPath string        = kAPIPath + "/functionroomgroup/Search"
+	kFunctionRoomsSearchPath     string        = kAPIPath + "/functionroom/Search"
+	kDefiniteEventSearchPath     string        = kAPIPath + "/bookingEvent/DefiniteEventSearch"
+	kTTL                         time.Duration = time.Minute * 15
 )
 
 var (
 	ocpApimSubscriptionKey string = os.Getenv("AHWS_APIM_SUBSCRIPTION_KEY")
-	vAuthTokenResponse     AuthTokenResponse
+	apiCache                      = cache.New(15*time.Minute, 20*time.Minute)
 )
 
 func main() {
-	vAuthTokenResponse = authenticate()
+	gob.Register(AuthTokenResponse{})
+	gob.Register([]LocationResponse{})
+	gob.Register([]FunctionRoomGroupsResponse{})
+	gob.Register([]DefiniteEventSearchResponse{})
 
-	log.Println("Authenticated with token:" + vAuthTokenResponse.AuthToken)
-	log.Println("Authenticated expires_in:" + vAuthTokenResponse.ExpiresIn)
-	log.Println("Authenticated refresh token:" + vAuthTokenResponse.RefreshToken)
+	log.Println("load cache")
+	loadCacheGob()
 
-	GetLocations()
+	// AuthToken = GetAuthToken()
+	// log.Println("Authenticated with token:" + AuthToken)
 
-	ticker := time.NewTicker(time.Hour * 71)
+	// apiCache.LoadFile("cache.file")
+	log.Println("loaded cache")
 
-	// Create a channel to receive the tick events from the timer
-	tickChannel := ticker.C
+	// log.Println("flush cache")
+	// apiCache.Flush()
+	// log.Println("flushed")
 
-	// Start a for loop to range over the tick events from the channel
-	for range tickChannel {
-		// This block of code will be executed every time the timer fires
+	// programAborted := make(chan bool)
+	cancelChan := make(chan os.Signal, 1)
 
-		// You can put any code you want to run on a timer here
-		log.Println("Refreshing token")
+	// catch SIGTERM or SIGINT
+	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		http.HandleFunc("/view/cover", func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, "cover_screen.html")
+		})
 
-func (authRequest CreateAuthToken) Do() (responseData AuthTokenResponse) {
-	body := authRequest.Bytes()
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
+		http.HandleFunc("/view/schedule", func(w http.ResponseWriter, r *http.Request) {
+			var locationIDs []string
+			locations := GetLocations()
+			for _, location := range locations {
+				locationIDs = append(locationIDs, location.Id)
+			}
+			functionRoomGroups := GetFunctionRoomGroups(FunctionRoomGroupRequest{
+				LocationIDs:  locationIDs,
+				RecordStatus: "Active",
+			})
 
-	return responseData
+			tmpl, err := template.ParseFiles("schedule_screen.html.template")
+			LogError(err)
+			events := ScheduleScreen{}
+			for _, frg := range functionRoomGroups {
+				definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
+					LocationId:                frg.LocationId,
+					FunctionRoomGroupId:       frg.Id,
+					BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
+					BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
+				})
+				var e []DefiniteEventSearchResponse
+				for _, event := range definiteEvents {
+					re := regexp.MustCompile("T(.*:.*):.*$")
+					startTime := re.FindStringSubmatch(event.StartDateTime)
+					endTime := re.FindStringSubmatch(event.EndDateTime)
+					event.StartDateTime = startTime[1]
+					event.EndDateTime = endTime[1]
+					e = append(e, event)
+					log.Println(event.StartDateTime)
+				}
+				sort.Slice(e, func(i, j int) bool {
+					return e[i].StartDateTime < e[j].StartDateTime
+				})
+				events[frg.Name] = e
+			}
+			err = tmpl.Execute(w, events)
+			LogError(err)
+			// http.ServeFile(w, r, "cover_screen.html")
+		})
+
+		// http.HandleFunc("/locations", func(w http.ResponseWriter, r *http.Request) {
+		// 	w.Header().Add("Content-Type", "application/json")
+		// 	w.Write(locations.Bytes())
+		// })
+
+		http.ListenAndServe(":8080", nil)
+	}()
+
+	sig := <-cancelChan
+	log.Printf("Caught signal %v, waiting 3 seconds for graceful shutdown.", sig)
+
+	log.Println("save cache")
+	saveCacheGob()
+	log.Println("saved cache")
+
+	// programAborted <- true
+	// close(programAborted)
+	time.Sleep(time.Second * 3)
+	log.Println("Goodbye.")
 }
 
-func (authRequest CreateAuthToken) Bytes() []byte {
+func GetAuthToken() string {
+	if cached, expiresAt, found := apiCache.GetWithExpiration("AccessToken"); found {
+		log.Println("AccessToken.string:" + cached.(string))
+		log.Println("AccessToken.expiresAt:" + expiresAt.String())
+		// AuthToken = cached.(string)
+		return cached.(string)
+	} else {
+		if cached, expiresAt, found := apiCache.GetWithExpiration("RefreshAccessToken"); found {
+			log.Println("RefreshAccessToken.string:" + cached.(string))
+			log.Println("RefreshAccessToken.expiresAt:" + expiresAt.String())
+			return refreshAccessToken(cached.(string))
+		} else {
+			return authenticate()
+		}
+	}
+}
+
+// func authenticate() (authTokenResponse AuthTokenResponse) {
+
+func authenticate() string {
+	authRequest := AuthTokenRequest{
+		ClientID:     os.Getenv("AHWS_CLIENT_ID"),
+		ClientSecret: os.Getenv("AHWS_CLIENT_SECRET"),
+		Username:     os.Getenv("AHWS_USERNAME"),
+		Password:     os.Getenv("AHWS_PASSWORD"),
+		GrantType:    "password",
+	}
+
+	var responseData AuthTokenResponse
+
+	// Encode the dictionary as JSON.
 	jsonRequestBody, err := json.Marshal(authRequest)
 	LogError(err)
 
-	return doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kAccessTokenPath, jsonRequestBody))
+	log.Println(authRequest)
+
+	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kAccessTokenPath, jsonRequestBody))
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+
+	apiCache.Set("AuthTokenResponse", responseData, cache.DefaultExpiration)
+	apiCache.Set("AccessToken", responseData.AuthToken, cache.DefaultExpiration)
+	apiCache.Set("RefreshAccessToken", responseData.RefreshToken, time.Hour*71)
+
+	return responseData.AuthToken
 }
 
-func (CreateAuthToken) FixturePath() string {
-	return "fixtures/authtoken.json"
-}
+// func refreshAccessToken(refreshAccessToken string) (authTokenResponse AuthTokenResponse) {
 
-func (refreshTokenRequest RefreshAuthToken) Do() (responseData AuthTokenResponse) {
+func refreshAccessToken(refreshAccessToken string) string {
+	refreshTokenRequest := RefreshAuthTokenRequest{
+		GrantType:    "refresh_token",
+		RefreshToken: refreshAccessToken,
+	}
+
+	// Encode the dictionary as JSON.
 	jsonRequestBody, err := json.Marshal(refreshTokenRequest)
 	LogError(err)
+
+	var responseData AuthTokenResponse
 
 	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kRefreshAccessTokenPath, jsonRequestBody))
 
 	LogError(json.Unmarshal(body, &responseData))
 	LogPrettyPrintJSON(responseData)
 
+	apiCache.Set("AuthTokenResponse", responseData, cache.DefaultExpiration)
+	apiCache.Set("AccessToken", responseData.AuthToken, cache.DefaultExpiration)
+	apiCache.Set("RefreshAccessToken", responseData.RefreshToken, time.Hour*71)
+
+	return responseData.AuthToken
+}
+
+func GetLocations() []LocationResponse {
+	cached, expiresAt, found := apiCache.GetWithExpiration("GetLocations")
+	if found {
+		log.Println("hit cache(GetLocations) - expires in: " + expiresAt.String())
+		LogPrettyPrintJSON(cached)
+		return cached.([]LocationResponse)
+	}
+
+	var responseData []LocationResponse
+	body := doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationSearchPath))
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+	apiCache.Set("GetLocations", responseData, cache.DefaultExpiration)
 	return responseData
 }
 
-func (r GetLocations) Do() (responseData []LocationResponse) {
-	body := r.Bytes()
+func GetLocationsbyID() []LocationResponse {
+	cached, found := apiCache.Get("GetLocationsByID")
+	if found {
+		log.Println("hit cache: ")
+		LogPrettyPrintJSON(cached)
+		return cached.([]LocationResponse)
+	}
+
+	var responseData []LocationResponse
+	body := doHTTPRequest(newHTTPGetRequest(kAHWSBaseURL + kLocationsByID))
+
 	LogError(json.Unmarshal(body, &responseData))
 	LogPrettyPrintJSON(responseData)
+	apiCache.Set("GetLocationsByID", responseData, cache.DefaultExpiration)
+	return responseData
+}
+
+func GetLocationsByExternalID() []LocationResponse {
+	cached, found := apiCache.Get("GetLocationsByExternalID")
+	if found {
+		log.Println("hit cache: ")
+		LogPrettyPrintJSON(cached)
+		return cached.([]LocationResponse)
+	}
+
+	var responseData []LocationResponse
+	body := doHTTPRequest(newHTTPGetRequest(kAHWSBaseURL + kLocationsByExternalID))
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+	apiCache.Set("GetLocationsByExternalID", responseData, cache.DefaultExpiration)
+	return responseData
+}
+
+func GetFunctionRoomGroups(functionRoomGroupsRequest FunctionRoomGroupRequest) []FunctionRoomGroupsResponse {
+	var cachedFunctionRoomGroups []FunctionRoomGroupsResponse
+
+	for idx, key := range functionRoomGroupsRequest.LocationIDs {
+		cached, found := apiCache.Get("functionRoomGroups:AtLocation:" + key)
+		if found {
+			functionRoomGroupsRequest.LocationIDs = append(
+				functionRoomGroupsRequest.LocationIDs[:idx],
+				functionRoomGroupsRequest.LocationIDs[idx+1:]...)
+			cachedFunctionRoomGroups = append(cachedFunctionRoomGroups, cached.([]FunctionRoomGroupsResponse)...)
+		}
+	}
+
+	jsonRequestBody, err := json.Marshal(functionRoomGroupsRequest)
+	LogError(err)
+
+	var responseData []FunctionRoomGroupsResponse
+
+	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kFunctionRoomGroupSearchPath, jsonRequestBody))
+
+	LogError(json.Unmarshal(body, &responseData))
+	LogPrettyPrintJSON(responseData)
+
+	cacheStg := map[string][]FunctionRoomGroupsResponse{}
+	for _, key := range responseData {
+		cacheStg[key.LocationId] = append(cacheStg[key.LocationId], key)
+	}
+
+	for k, v := range cacheStg {
+		apiCache.Add("functionRoomGroups:AtLocation:"+k, v, cache.DefaultExpiration)
+	}
+
+	responseData = append(responseData, cachedFunctionRoomGroups...)
 
 	return responseData
 }
 
-func (r GetLocations) Bytes() []byte {
-	return r.bytes()
-}
+func GetBookingEventDetails(definiteEventSearchRequest DefiniteEventSearchRequest) []DefiniteEventSearchResponse {
+	var cachedEvents []DefiniteEventSearchResponse
 
-func (r *GetLocations) bytes() []byte {
-	if len(r.Data) != 0 {
-		return r.Data
+	cached, found := apiCache.Get("GetBookingEventsDetails:OnDate:" + definiteEventSearchRequest.BookingEventDateTimeBegin + ":AtLocation:" + definiteEventSearchRequest.LocationId)
+	if found {
+		cachedEvents = cached.([]DefiniteEventSearchResponse)
+		log.Println("hit cache: ")
+		LogPrettyPrintJSON(cachedEvents)
+		return cachedEvents
+	} else {
+		jsonRequestBody, err := json.Marshal(definiteEventSearchRequest)
+		LogError(err)
+
+		var responseData []DefiniteEventSearchResponse
+
+		body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kDefiniteEventSearchPath, jsonRequestBody))
+
+		LogError(json.Unmarshal(body, &responseData))
+		LogPrettyPrintJSON(responseData)
+
+		apiCache.Set(
+			"GetBookingEventsDetails:OnDate:"+
+				definiteEventSearchRequest.BookingEventDateTimeEnd+
+				":AtLocation:"+definiteEventSearchRequest.LocationId,
+			responseData, cache.DefaultExpiration)
+
+		return responseData
 	}
-
-	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationSearchPath))
-	return r.Data
 }
 
-func (GetLocations) FixturePath() string {
-	return "fixtures/locations.json"
-}
+// func SetHeadersForReq() {
+// 	pc, _, _, _ := runtime.Caller(1)
+// 	callerMethod := runtime.FuncForPC(pc).Name()
 
-func (r GetLocationsByID) Do() {
-	var responseData []LocationResponse
-	body := r.Bytes()
+// 	log.Println("callerMethod = " + callerMethod)
 
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
-}
+// 	switch callerMethod {
+// 	case "GetLocations":
 
-func (r GetLocationsByID) Bytes() []byte {
-	return r.bytes()
-}
-
-func (r *GetLocationsByID) bytes() []byte {
-	// TODO: Implement proper caching here
-	if len(r.Data) != 0 {
-		return r.Data
-	}
-
-	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationsByID))
-	return r.Data
-}
-
-func (GetLocationsByID) FixturePath() string {
-	return "fixtures/locationsbyid.json"
-}
-
-func (r GetLocationsByExternalID) Do() {
-	var responseData []LocationResponse
-	body := r.Bytes()
-
-	LogError(json.Unmarshal(body, &responseData))
-	LogPrettyPrintJSON(responseData)
-}
-
-func (r GetLocationsByExternalID) Bytes() []byte {
-	return r.bytes()
-}
-
-func (r *GetLocationsByExternalID) bytes() []byte {
-	// TODO: Implement proper caching here
-	if len(r.Data) != 0 {
-		return r.Data
-	}
-
-	r.Data = doHTTPRequest(newHTTPPostRequest(kAHWSBaseURL + kLocationsByExternalID))
-	return r.Data
-}
-
-func (GetLocationsByExternalID) FixturePath() string {
-	return "fixtures/locationsbyexternalid.json"
-}
-
-func (f GetFunctionRoomGroups) Do() {
-	var responseData FunctionRoomGroupsResponse
-	LogError(json.Unmarshal(f.Bytes(), &responseData))
-	LogPrettyPrintJSON(responseData)
-}
-
-func (r GetFunctionRoomGroups) Bytes() []byte {
-	return r.bytes()
-}
-
-func (r *GetFunctionRoomGroups) bytes() []byte {
-	// TODO: Implement proper caching here
-	jsonRequestBody, err := json.Marshal(r)
-	LogError(err)
-
-	if len(r.Data) != 0 {
-		return r.Data
-	}
-
-	r.Data = doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kFunctionRoomGroupSearchPath, jsonRequestBody))
-	return r.Data
-}
-
-func (f GetFunctionRoomGroups) FixturePath() string {
-	return "fixtures/functionroomgroups.json"
-}
-
-func (r GetDefiniteEvents) Do() {
-	var responseData DefiniteEventSearchResponse
-	LogError(json.Unmarshal(r.Bytes(), &responseData))
-	LogPrettyPrintJSON(responseData)
-}
-
-func (r GetDefiniteEvents) Bytes() []byte {
-	return r.bytes()
-}
-
-func (r *GetDefiniteEvents) bytes() []byte {
-	jsonRequestBody, err := json.Marshal(r)
-	LogError(err)
-
-	// TODO: Implement proper caching here
-	if len(r.Data) != 0 {
-		return r.Data
-	}
-
-	return doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+kDefiniteEventSearchPath, jsonRequestBody))
-}
+// 	}
+// }
 
 func LogPrettyPrintJSON(data interface{}) {
+	log.Println(PrettyPrintJSON(data))
+}
+
+func PrettyPrintJSON(data interface{}) string {
 	b, err := json.MarshalIndent(data, "", "    ")
 
 	// Marshal the map back into a JSON byte slice with indentation
 	if err != nil {
 		log.Println(err)
-		return
+		return ""
 	}
-	log.Println(string(b))
+	return (string(b))
 }
 
 func LogError(err error) {
@@ -418,12 +540,16 @@ func newHTTPRequest(requestType string, URI string, json []byte) (req *http.Requ
 
 	req.Header.Set("Ocp-Apim-Subscription-Key", ocpApimSubscriptionKey)
 
+	// query := req.URL.Query()
+	// query.Add("subscription-key", ocpApimSubscriptionKey)
+	// req.URL.RawQuery = query.Encode()
+
 	if json != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	if strings.Contains(URI, kAPIPath) {
-		req.Header.Set("Authorization", "OAuth "+vAuthTokenResponse.AuthToken)
+		req.Header.Set("Authorization", "OAuth "+GetAuthToken())
 	}
 
 	return req
@@ -437,55 +563,64 @@ func doHTTPRequest(req *http.Request) (body []byte) {
 		return
 	}
 
+	pc, _, _, _ := runtime.Caller(1)
+	callerMethod := runtime.FuncForPC(pc).Name()
+	log.Println("HTTP code:" + resp.Status + " - in function:" + callerMethod)
+
 	defer resp.Body.Close()
 	body, err = io.ReadAll(resp.Body)
+	fmt.Println(string(body))
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
 	return (body)
 }
 
-func genFixtures() {
-	// populateFixture(authTokenRequest)
+func saveCacheGob() {
+	log.Println("save cache gob:")
+	cachedItems := apiCache.Items()
 
-	// Populate location fixture
-	locationClient := GetLocations{}
-	populateFixture(locationClient)
-
-	// Decode location data for parsing
-	var locations []LocationResponse
-	locationData := locationClient.Bytes()
-
-	json.Unmarshal(locationData, &locations)
-
-	// Populate function room group fixture for all locations
-	var locationIds []string
-	for _, location := range locations {
-		locationIds = append(locationIds, location.Id)
+	// Create a file to store the gob
+	file, err := os.Create("cache.gob")
+	if err != nil {
+		panic(err)
 	}
+	defer file.Close()
 
-	functionRoomGroups := GetFunctionRoomGroups{
-		LocationIds: locationIds,
+	// Create a gob encoder
+	encoder := gob.NewEncoder(file)
+
+	// Encode the map
+	err = encoder.Encode(cachedItems)
+	if err != nil {
+		panic(err)
 	}
-	populateFixture(functionRoomGroups)
 }
 
-func populateFixture(fixturer Fixturer) {
-	resp := fixturer.Bytes()
+func loadCacheGob() {
+	log.Println("load cache gob:")
+	file, err := os.Open("cache.gob")
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
 
-	var out bytes.Buffer
-	err := json.Indent(&out, resp, "", "    ")
-	LogError(err)
+	// Create a gob decoder
+	decoder := gob.NewDecoder(file)
 
-	log.Println("Populating fixture:", fixturer.FixturePath(), "of size:", len(resp))
+	// Decode the gob into a map
+	var items map[string]cache.Item
+	err = decoder.Decode(&items)
+	if err == nil {
+		apiCache = cache.NewFrom(15*time.Minute, 20*time.Minute, items)
+	}
+}
 
-	f, err := os.Create(fixturer.FixturePath())
-	LogError(err)
-
-	f.Write(out.Bytes())
-	log.Println("Successfully wrote fixture:", fixturer.FixturePath())
+func expirationTimeFromUnixTime(utime int64) time.Duration {
+	t := time.Unix(utime, 0)
+	// Calculate the duration from the Unix time to now
+	return time.Since(t)
 }
 
 // func handleHTTPCode(statusCode int) {
@@ -507,8 +642,3 @@ func populateFixture(fixturer Fixturer) {
 // 		log.Println("Unknown status code")
 // 	}
 // }
-
-// q := req.URL.Query()
-// q.Add("subscription-key", ocpApimSubscriptionKey)
-// req.URL.RawQuery = q.Encode()
-// fmt.Println(req.URL)
