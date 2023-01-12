@@ -356,8 +356,13 @@ func main() {
 		// 	w.Header().Add("Content-Type", "application/json")
 		// 	w.Write(locations.Bytes())
 		// })
+		port, ok := os.LookupEnv("PORT")
+		if !ok {
+			port = "8080"
+		}
 
-		http.ListenAndServe(":8080", nil)
+		fmt.Println(os.Environ())
+		http.ListenAndServe(":"+port, nil)
 	}()
 
 	sig := <-cancelChan
