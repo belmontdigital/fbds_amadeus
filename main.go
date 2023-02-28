@@ -5,7 +5,6 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"net/http"
@@ -17,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"text/template"
 	"time"
 
 	"github.com/patrickmn/go-cache"
@@ -60,14 +60,20 @@ type (
 
 	FunctionRoomGroupRequest struct {
 		LocationIDs  []string `json:"LocationIds"`
-		RecordStatus string   `json:"-"` // TODO: add note
+		RecordStatus string   `json:"-"`
+	}
+
+	FunctionRoomRequest struct {
+		LocationIDs  []string `json:"LocationIds"`
+		RecordStatus string   `json:"-"`
 	}
 
 	DefiniteEventSearchRequest struct {
 		BookingEventDateTimeBegin string `json:"BookingEventDateTimeBegin"`
 		BookingEventDateTimeEnd   string `json:"BookingEventDateTimeEnd"`
-		FunctionRoomGroupId       string `json:"FunctionRoomGroupId"`
+		FunctionRoomGroupId       string `json:"FunctionRoomGroupId,omitempty"`
 		LocationId                string `json:"LocationId"`
+		MaxResultCount            int    `json:"MaxResultCount"`
 	}
 
 	DefiniteEventCacheSearchResults struct {
@@ -189,11 +195,14 @@ type (
 )
 
 const (
-	kAHWSBaseURL                 string        = "https://api-release.amadeus-hospitality.com"
-	kAuthPath                    string        = "/release/2.0/OAuth2"
+	// kAHWSBaseURL string = "https://api-release.amadeus-hospitality.com"
+	// kAuthPath    string = "/release/2.0/OAuth2"
+	// kAPIPath     string = "/api/release"
+	kAHWSBaseURL                 string        = "https://api.newmarketinc.com"
+	kAuthPath                    string        = "/2.0/OAuth2"
+	kAPIPath                     string        = "/api"
 	kAccessTokenPath             string        = kAuthPath + "/AccessToken"
 	kRefreshAccessTokenPath      string        = kAuthPath + "/RefreshAccessToken"
-	kAPIPath                     string        = "/api/release"
 	kLocationSearchPath          string        = kAPIPath + "/Location/Search"
 	kLocationsByExternalID       string        = kAPIPath + "/location/ExternalLocationId"
 	kLocationsByID               string        = kAPIPath + "/location/LocationId"
@@ -216,155 +225,15 @@ func main() {
 
 	log.Println("load cache")
 	loadCacheGob()
-
-	// AuthToken = GetAuthToken()
-	// log.Println("Authenticated with token:" + AuthToken)
-
-	// apiCache.LoadFile("cache.file")
 	log.Println("loaded cache")
 
-	// log.Println("flush cache")
-	// apiCache.Flush()
-	// log.Println("flushed")
+	amadeusIntegrationTesting()
 
-	// programAborted := make(chan bool)
 	cancelChan := make(chan os.Signal, 1)
 
 	// catch SIGTERM or SIGINT
 	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		http.HandleFunc("/view/cover", func(w http.ResponseWriter, r *http.Request) {
-			if !r.URL.Query().Has("location-id") || !r.URL.Query().Has("room-id") || !r.URL.Query().Has("group-id") {
-				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte("location-id, group-id, and room-id must be provided"))
-				return
-			}
-
-			tmpl, err := template.ParseFiles("cover_screen.html.template")
-			LogError(err)
-
-			cs := CoverScreen{}
-			definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
-				LocationId:                r.URL.Query().Get("location-id"),
-				FunctionRoomGroupId:       r.URL.Query().Get("group-id"),
-				BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
-				BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
-			})
-			for _, event := range definiteEvents {
-				if event.ExternalFunctionRoomId != r.URL.Query().Get("room-id") {
-					continue
-				}
-
-				// NOTE: We don't know what tz... Defaults to EST, can accept the tz from the client if required.
-				loc, err := time.LoadLocation("EST")
-				LogError(err)
-
-				now := time.Now().In(loc)
-
-				re := regexp.MustCompile("T(.*:.*):.*$")
-				startTime := re.FindStringSubmatch(event.StartDateTime)
-				endTime := re.FindStringSubmatch(event.EndDateTime)
-
-				startTimeSlice := strings.Split(startTime[1], ":")
-				startTimeHour, _ := strconv.Atoi(startTimeSlice[0])
-				startTimeMinute, _ := strconv.Atoi(startTimeSlice[1])
-
-				endTimeSlice := strings.Split(endTime[1], ":")
-				endTimeHour, _ := strconv.Atoi(endTimeSlice[0])
-				endTimeMinute, _ := strconv.Atoi(endTimeSlice[1])
-
-				startDate := time.Date(
-					now.Year(),
-					now.Month(),
-					now.Day(), startTimeHour, startTimeMinute, 0, 0, loc)
-
-				endDate := time.Date(
-					now.Year(),
-					now.Month(),
-					now.Day(), endTimeHour, endTimeMinute, 0, 0, loc)
-
-				currentTime := now
-
-				// NOTE: For manipulating time for testing.
-				// currentTime = time.Date(
-				// 	time.Now().Year(),
-				// 	time.Now().Month(),
-				// 	time.Now().Day(), 00, 01, 0, 0, loc)
-
-				if startDate.Unix() <= currentTime.Unix() && currentTime.Unix() < endDate.Unix() {
-					cs.StartTime = startTime[1]
-					cs.EndTime = endTime[1]
-					cs.EventName = event.Name
-				}
-			}
-
-			if cs.EventName == "" {
-				cs.EventName = "No Current Event"
-			}
-
-			err = tmpl.Execute(w, cs)
-			LogError(err)
-		})
-
-		http.HandleFunc("/view/schedule", func(w http.ResponseWriter, r *http.Request) {
-			// var locationIDs []string
-			// locations := GetLocations()
-			// for _, location := range locations {
-			// 	locationIDs = append(locationIDs, location.Id)
-			// }
-			if !r.URL.Query().Has("location-id") {
-				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte("location-id must be provided"))
-				return
-			}
-
-			functionRoomGroups := GetFunctionRoomGroups(FunctionRoomGroupRequest{
-				LocationIDs:  []string{r.URL.Query().Get("location-id")},
-				RecordStatus: "Active",
-			})
-
-			tmpl, err := template.ParseFiles("schedule_screen.html.template")
-			LogError(err)
-			events := ScheduleScreen{}
-			for _, frg := range functionRoomGroups {
-				definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
-					LocationId:                frg.LocationId,
-					FunctionRoomGroupId:       frg.Id,
-					BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
-					BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
-				})
-				var e []DefiniteEventSearchResponse
-				for _, event := range definiteEvents {
-					re := regexp.MustCompile("T(.*:.*):.*$")
-					startTime := re.FindStringSubmatch(event.StartDateTime)
-					endTime := re.FindStringSubmatch(event.EndDateTime)
-					event.StartDateTime = startTime[1]
-					event.EndDateTime = endTime[1]
-					e = append(e, event)
-				}
-				sort.Slice(e, func(i, j int) bool {
-					return e[i].StartDateTime < e[j].StartDateTime
-				})
-				events[frg.Name] = e
-			}
-			err = tmpl.Execute(w, events)
-			LogError(err)
-			// http.ServeFile(w, r, "cover_screen.html")
-		})
-
-		// http.HandleFunc("/locations", func(w http.ResponseWriter, r *http.Request) {
-		// 	w.Header().Add("Content-Type", "application/json")
-		// 	w.Write(locations.Bytes())
-		// })
-		port, ok := os.LookupEnv("PORT")
-		if !ok {
-			port = "8080"
-		}
-
-		fmt.Println(os.Environ())
-		http.ListenAndServe(":"+port, nil)
-	}()
-
+	// go httpServer(cancelChan)
 	sig := <-cancelChan
 	log.Printf("Caught signal %v, waiting 3 seconds for graceful shutdown.", sig)
 
@@ -372,17 +241,146 @@ func main() {
 	saveCacheGob()
 	log.Println("saved cache")
 
-	// programAborted <- true
-	// close(programAborted)
 	time.Sleep(time.Second * 3)
 	log.Println("Goodbye.")
+}
+
+func scheduleView(w http.ResponseWriter, definiteEvents []DefiniteEventSearchResponse) {
+	events := ScheduleScreen{}
+	w.Header().Add("Content-Type", "text/html")
+	tmpl, err := template.ParseFiles("schedule_screen.html.template")
+	LogError(err)
+
+	for _, event := range definiteEvents {
+		re := regexp.MustCompile("T(.*:.*):.*$")
+		startTime := re.FindStringSubmatch(event.StartDateTime)
+		endTime := re.FindStringSubmatch(event.EndDateTime)
+		event.StartDateTime = startTime[1]
+		event.EndDateTime = endTime[1]
+		events[event.BookingPostAs] = append(events[event.BookingPostAs], event)
+	}
+	for _, v := range events {
+		sort.Slice(v, func(i, j int) bool {
+			return v[i].StartDateTime < v[j].StartDateTime
+		})
+	}
+
+	LogError(tmpl.Execute(w, events))
+}
+
+func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEventSearchResponse) {
+	cs := CoverScreen{}
+	w.Header().Add("Content-Type", "text/html")
+
+	tmpl, err := template.ParseFiles("cover_screen.html.template")
+	LogError(err)
+
+	for _, event := range definiteEvents {
+		if event.ExternalFunctionRoomId != roomId || !event.IsPosted {
+			continue
+		}
+
+		// NOTE: We don't know what tz... Defaults to EST, can accept the tz from the client if required.
+		loc, err := time.LoadLocation("EST")
+		LogError(err)
+
+		now := time.Now().In(loc)
+
+		re := regexp.MustCompile("T(.*:.*):.*$")
+		startTime := re.FindStringSubmatch(event.StartDateTime)
+		endTime := re.FindStringSubmatch(event.EndDateTime)
+
+		startTimeSlice := strings.Split(startTime[1], ":")
+		startTimeHour, _ := strconv.Atoi(startTimeSlice[0])
+		startTimeMinute, _ := strconv.Atoi(startTimeSlice[1])
+
+		endTimeSlice := strings.Split(endTime[1], ":")
+		endTimeHour, _ := strconv.Atoi(endTimeSlice[0])
+		endTimeMinute, _ := strconv.Atoi(endTimeSlice[1])
+
+		startDate := time.Date(
+			now.Year(),
+			now.Month(),
+			now.Day(), startTimeHour, startTimeMinute, 0, 0, loc)
+
+		endDate := time.Date(
+			now.Year(),
+			now.Month(),
+			now.Day(), endTimeHour, endTimeMinute, 0, 0, loc)
+
+		currentTime := now
+
+		// NOTE: For manipulating time for testing.
+		// currentTime = time.Date(
+		// 	time.Now().Year(),
+		// 	time.Now().Month(),
+		// 	time.Now().Day(), 00, 01, 0, 0, loc)
+
+		if startDate.Unix() <= currentTime.Unix() && currentTime.Unix() < endDate.Unix() {
+			cs.StartTime = startTime[1]
+			cs.EndTime = endTime[1]
+			cs.EventName = event.Name
+		}
+	}
+
+	if cs.EventName == "" {
+		cs.EventName = "No Current Event"
+	}
+
+	err = tmpl.Execute(w, cs)
+	LogError(err)
+}
+
+func httpServer(cancelChan chan<- os.Signal) {
+	http.HandleFunc("/view/cover", func(w http.ResponseWriter, r *http.Request) {
+		if !r.URL.Query().Has("location-id") || !r.URL.Query().Has("room-id") || !r.URL.Query().Has("group-id") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("location-id, group-id, and room-id must be provided"))
+			return
+		}
+
+		definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
+			LocationId:                r.URL.Query().Get("location-id"),
+			FunctionRoomGroupId:       r.URL.Query().Get("group-id"),
+			BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
+			BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
+		})
+		coverView(w, r.URL.Query().Get("room-id"), definiteEvents)
+	})
+
+	http.HandleFunc("/view/schedule", func(w http.ResponseWriter, r *http.Request) {
+		if !r.URL.Query().Has("location-id") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("location-id must be provided"))
+			return
+		}
+
+		w.Header().Add("Content-Type", "text/html")
+		definiteEvents := GetBookingEventDetails(DefiniteEventSearchRequest{
+			LocationId:                r.URL.Query().Get("location-id"),
+			FunctionRoomGroupId:       r.URL.Query().Get("group-id"),
+			BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
+			BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
+		})
+		scheduleView(w, definiteEvents)
+	})
+
+	// http.HandleFunc("/locations", func(w http.ResponseWriter, r *http.Request) {
+	// 	w.Header().Add("Content-Type", "application/json")
+	// 	w.Write(locations.Bytes())
+	// })
+	port, ok := os.LookupEnv("PORT")
+	if !ok {
+		port = "8080"
+	}
+
+	http.ListenAndServe(":"+port, nil)
 }
 
 func GetAuthToken() string {
 	if cached, expiresAt, found := apiCache.GetWithExpiration("AccessToken"); found {
 		log.Println("AccessToken.string:" + cached.(string))
 		log.Println("AccessToken.expiresAt:" + expiresAt.String())
-		// AuthToken = cached.(string)
 		return cached.(string)
 	} else {
 		if cached, expiresAt, found := apiCache.GetWithExpiration("RefreshAccessToken"); found {
@@ -540,10 +538,58 @@ func GetFunctionRoomGroups(functionRoomGroupsRequest FunctionRoomGroupRequest) [
 	return responseData
 }
 
+// kFunctionRoomsSearchPath
+func GetFunctionRooms(req FunctionRoomRequest) []any {
+	// var cachedFunctionRooms []any
+
+	// for idx, key := range req.LocationIDs {
+	// 	cached, found := apiCache.Get("functionRooms:AtLocation:" + key)
+	// 	if found {
+	// 		req.LocationIDs = append(
+	// 			req.LocationIDs[:idx],
+	// 			req.LocationIDs[idx+1:]...)
+	// 		cachedFunctionRooms = append(cachedFunctionRooms, cached.([]FunctionRoomsResponse)...)
+	// 	}
+	// }
+
+	jsonRequestBody, err := json.Marshal(req)
+	LogError(err)
+
+	//var responseData []FunctionRoomGroupsResponse
+
+	body := doHTTPRequest(newHTTPPostJSONRequest(kAHWSBaseURL+"/api/V2/FunctionRoom/Export", jsonRequestBody))
+	fmtData := &bytes.Buffer{}
+	json.Indent(fmtData, body, "", " ")
+	fmt.Println(fmtData.String())
+
+	//LogError(json.Unmarshal(body, &responseData))
+	//LogPrettyPrintJSON(responseData)
+
+	// cacheStg := map[string][]FunctionRoomsResponse{}
+	// for _, key := range responseData {
+	// 	cacheStg[key.LocationId] = append(cacheStg[key.LocationId], key)
+	// }
+
+	// for k, v := range cacheStg {
+	// 	apiCache.Add("functionRoomGroups:AtLocation:"+k, v, cache.DefaultExpiration)
+	// }
+
+	// responseData = append(responseData, cachedFunctionRoomGroups...)
+
+	//return responseData
+	return nil
+}
+
 func GetBookingEventDetails(definiteEventSearchRequest DefiniteEventSearchRequest) []DefiniteEventSearchResponse {
 	var cachedEvents []DefiniteEventSearchResponse
 
-	cached, found := apiCache.Get("GetBookingEventsDetails:OnDate:" + definiteEventSearchRequest.BookingEventDateTimeBegin + ":AtLocation:" + definiteEventSearchRequest.LocationId)
+	cached, found := apiCache.Get(
+		"GetBookingEventsDetails:" +
+			definiteEventSearchRequest.BookingEventDateTimeBegin +
+			":to:" +
+			definiteEventSearchRequest.BookingEventDateTimeEnd +
+			":AtLocation:" +
+			definiteEventSearchRequest.LocationId)
 	if found {
 		cachedEvents = cached.([]DefiniteEventSearchResponse)
 		log.Println("hit cache: ")
@@ -561,26 +607,17 @@ func GetBookingEventDetails(definiteEventSearchRequest DefiniteEventSearchReques
 		LogPrettyPrintJSON(responseData)
 
 		apiCache.Set(
-			"GetBookingEventsDetails:OnDate:"+
+			"GetBookingEventsDetails:"+
+				definiteEventSearchRequest.BookingEventDateTimeBegin+
+				":to:"+
 				definiteEventSearchRequest.BookingEventDateTimeEnd+
-				":AtLocation:"+definiteEventSearchRequest.LocationId,
+				":AtLocation:"+
+				definiteEventSearchRequest.LocationId,
 			responseData, cache.DefaultExpiration)
 
 		return responseData
 	}
 }
-
-// func SetHeadersForReq() {
-// 	pc, _, _, _ := runtime.Caller(1)
-// 	callerMethod := runtime.FuncForPC(pc).Name()
-
-// 	log.Println("callerMethod = " + callerMethod)
-
-// 	switch callerMethod {
-// 	case "GetLocations":
-
-// 	}
-// }
 
 func LogPrettyPrintJSON(data interface{}) {
 	log.Println(PrettyPrintJSON(data))
@@ -633,7 +670,8 @@ func newHTTPRequest(requestType string, URI string, json []byte) (req *http.Requ
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	if strings.Contains(URI, kAPIPath) {
+	if strings.Contains(req.URL.Path, kAPIPath) {
+		fmt.Println(URI)
 		req.Header.Set("Authorization", "OAuth "+GetAuthToken())
 	}
 
@@ -654,7 +692,6 @@ func doHTTPRequest(req *http.Request) (body []byte) {
 
 	defer resp.Body.Close()
 	body, err = io.ReadAll(resp.Body)
-	fmt.Println(string(body))
 	if err != nil {
 		log.Println(err)
 		return
