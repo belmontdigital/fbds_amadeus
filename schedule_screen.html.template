@@ -6,56 +6,54 @@ Amadeus Project December 2022
 <!DOCTYPE html>
 <html>
 <head>
-<title>Conference Schedule</title>
+    <meta charset="UTF-8"></meta>
+    <title>Conference Schedule</title>
 
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Mukta:wght@200;400;600&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Mukta:wght@200;400;600&display=swap" rel="stylesheet">
 
-<!--- CSS --->
-<style>
-	
-:root {
-	--default-text-color: #a8a9ab;
-	--default-white: #ffffff;
-	--pink-color: #eb0292;
-	--default-black: #000000;
-}	
+    <!--- CSS --->
+    <style>
+        :root {
+            --default-text-color: #a8a9ab;
+            --default-white: #ffffff;
+            --pink-color: #eb0292;
+            --default-black: #000000;
+        }
 
-html, body{ font-family: 'Mukta', sans-serif; color: var(--default-text-color); font-size: 100%; margin: 0; padding: 0; background-color: var(--default-black);}
+        html, body{ font-family: 'Mukta', sans-serif; color: var(--default-text-color); font-size: 100%; margin: 0; padding: 0; background-color: var(--default-black);}
 
-h1{ display: none;}
-h2{ color: var(--default-white); font-size: 2rem; line-height: 150%; text-transform: uppercase; margin: 0; padding: 0;}
+        h1{ display: none;}
+        h2{ color: var(--default-white); font-size: 2rem; line-height: 150%; text-transform: uppercase; margin: 0; padding: 0;}
 
-.wrapper{ margin: 0 auto; width: calc(100% - 4rem);}
+        .wrapper{ margin: 0 auto; width: calc(100% - 4rem);}
 
-.flex{ display: flex;}
+        .flex{ display: flex;}
 
-header{ padding: 2rem 0; border-bottom: solid 2px var(--pink-color); width: 100%; margin-bottom: 2rem;}
-header > .flex{ justify-content: space-between;}
-.header_heading{ text-transform: uppercase; font-size: 3.25rem; color: var(--default-text-color);}
-.header_heading span{ display: block; line-height: 100%; vertical-align: middle;}
-.header_time.header_heading{ color: var(--pink-color); white-space: nowrap;}
-.header_heading + .header_heading{ padding-left: 3rem;}
+        header{ padding: 2rem 0; border-bottom: solid 2px var(--pink-color); width: 100%; margin-bottom: 2rem;}
+        header > .flex{ justify-content: space-between;}
+        .header_heading{ text-transform: uppercase; font-size: 3.25rem; color: var(--default-text-color);}
+        .header_heading span{ display: block; line-height: 100%; vertical-align: middle;}
+        .header_time.header_heading{ color: var(--pink-color); white-space: nowrap;}
+        .header_heading + .header_heading{ padding-left: 3rem;}
 
 
-section{ padding: 2rem 0; border-bottom: solid thin var(--pink-color);}
-section:last-child{ border-bottom: 0;}
+        section{ padding: 2rem 0; border-bottom: solid thin var(--pink-color);}
+        section:last-child{ border-bottom: 0;}
 
-.section_title{ padding-bottom: 1rem;}
+        .section_title{ padding-bottom: 1rem;}
 
-table{ width: 100%;}
-table td{ font-size: 1.5rem; vertical-align: top;}
-table td.time{ white-space: nowrap; }
-table td.desc{ padding-left: 2rem; width: 60%;}
-table td.place{ padding-left: 2rem; width: 20%;}
+        table{ width: 100%;}
+        table td{ font-size: 1.5rem; vertical-align: top;}
+        table td.time{ white-space: nowrap; }
+        table td.desc{ padding-left: 2rem; width: 60%;}
+        table td.place{ padding-left: 2rem; width: 20%;}
 
-@media all and (max-width: 767px) {
-	h2{ font-size: 1.5rem;}
-	.header_heading{ font-size: 2rem;}
-	table td{ font-size: 1rem;}
-}
-
-</style>
-
+        @media all and (max-width: 767px) {
+            h2{ font-size: 1.5rem;}
+            .header_heading{ font-size: 2rem;}
+            table td{ font-size: 1rem;}
+        }
+    </style>
 </head>
 
 <body>
@@ -72,8 +70,17 @@ table td.place{ padding-left: 2rem; width: 20%;}
 			</div>
 		</div> <!--- end wrapper --->
 	</header>
-	
+
 	<main>
+        {{ if eq (len .) 0 }}
+        <section>
+            <div class="wrapper">
+                <div class="section_title">
+                    <h2>No scheduled events</h2>
+                </div>
+            </div>
+        </section>
+        {{ end }}
 		<!-- for each function room group -->
 		{{range $frg, $de := .}}
 		<section>
@@ -86,12 +93,14 @@ table td.place{ padding-left: 2rem; width: 20%;}
 					<table>
 						<tbody>
 							{{range $de}}
-							<!-- for each definite event -->
-							<tr>
-								<td class="time"> {{.StartDateTime}} -  {{.EndDateTime}}</td>
-								<td class="desc">{{.Name}}</td>
-								<td class="place">{{.FunctionRoomName}}</td>
-							</tr>
+                            {{if .IsPosted}}
+                            <!-- for each definite event -->
+                            <tr>
+                                <td class="time"> {{.StartDateTime}} -  {{.EndDateTime}}</td>
+                                <td class="desc">{{.Name}}</td>
+                                <td class="place">{{.FunctionRoomName}}</td>
+                            </tr>
+                            {{end}}
 							{{end}}
 						</tbody>
 					</table>
@@ -108,7 +117,7 @@ table td.place{ padding-left: 2rem; width: 20%;}
 		let min = time.getMinutes();
 		// let sec = time.getSeconds();
 		am_pm = "AM";
-	
+
 		if (hour > 12) {
 			hour -= 12;
 			am_pm = "PM";
@@ -117,20 +126,20 @@ table td.place{ padding-left: 2rem; width: 20%;}
 			hr = 12;
 			am_pm = "AM";
 		}
-	
+
 		hour = hour < 10 ? "0" + hour : hour;
 		min = min < 10 ? "0" + min : min;
 		// sec = sec < 10 ? "0" + sec : sec;
-	
+
 		let currentTime = hour + ":"
 			+ min + " " + am_pm; // + ":" + sec + " " + am_pm;
-	
+
 		document.getElementsByClassName("header_time")[0].getElementsByTagName("span")[0].innerHTML = currentTime;
 	}
 
 	window.onload = function() {
 		const today = new Date();
-		// return date.toLocaleDateString(locale, { weekday: 'long' });   
+		// return date.toLocaleDateString(locale, { weekday: 'long' });
 		document.getElementsByClassName("header_date")[0].getElementsByTagName("span")[0].innerHTML = today.toDateString();
 		setInterval(showTime, 1000);
 		showTime();
