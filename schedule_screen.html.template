@@ -93,14 +93,12 @@ Amadeus Project December 2022
 					<table>
 						<tbody>
 							{{range $de}}
-                            {{if .IsPosted}}
                             <!-- for each definite event -->
                             <tr>
                                 <td class="time"> {{.StartDateTime}} -  {{.EndDateTime}}</td>
                                 <td class="desc">{{.Name}}</td>
                                 <td class="place">{{.FunctionRoomName}}</td>
                             </tr>
-                            {{end}}
 							{{end}}
 						</tbody>
 					</table>

@@ -269,14 +269,13 @@ func main() {
 	gob.Register([]RoomGroups{})
 	loadCacheGob()
 	roomGroups, _ = loadJSONMapping()
-
 	//amadeusIntegrationTesting()
 
 	cancelChan := make(chan os.Signal, 1)
 
 	// catch SIGTERM or SIGINT
 	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
-	// go httpServer(cancelChan)
+	go httpServer(cancelChan)
 	sig := <-cancelChan
 	log.Printf("Caught signal %v, waiting 3 seconds for graceful shutdown.", sig)
 
@@ -293,6 +292,10 @@ func scheduleView(w http.ResponseWriter, definiteEvents []DefiniteEventSearchRes
 	LogError(err)
 
 	for _, event := range definiteEvents {
+		if !event.IsPosted {
+			continue
+		}
+
 		re := regexp.MustCompile("T(.*:.*):.*$")
 		startTime := re.FindStringSubmatch(event.StartDateTime)
 		endTime := re.FindStringSubmatch(event.EndDateTime)
@@ -309,20 +312,16 @@ func scheduleView(w http.ResponseWriter, definiteEvents []DefiniteEventSearchRes
 
 }
 
-func FindRoomInRoomGroups(roomID string, externalRoomID string) string {
-
-	if roomID == externalRoomID {
-		return roomID
-	}
-	cached, found := apiCache.Get("RoomGroupsByExternalID:" + externalRoomID)
+func FindRoomInRoomGroups(roomName string, eventRoom string) bool {
+	cached, found := apiCache.Get("RoomGroupByGroupName:" + eventRoom)
 	if found {
 		for _, room := range cached.(RoomGroups).Rooms {
-			if room == externalRoomID {
-				return room
+			if room == roomName {
+				return true
 			}
 		}
 	}
-	return ""
+	return false
 }
 
 func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEventSearchResponse) {
@@ -333,7 +332,7 @@ func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEv
 	LogError(err)
 
 	for _, event := range definiteEvents {
-		if event.ExternalFunctionRoomId != FindRoomInRoomGroups(roomId, event.ExternalFunctionRoomId) || !event.IsPosted {
+		if !event.IsPosted || (roomId != event.FunctionRoomName && !FindRoomInRoomGroups(roomId, event.FunctionRoomName)) {
 			continue
 		}
 
@@ -371,7 +370,7 @@ func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEv
 		// currentTime = time.Date(
 		// 	time.Now().Year(),
 		// 	time.Now().Month(),
-		// 	time.Now().Day(), 00, 01, 0, 0, loc)
+		// 	time.Now().Add(time.Hour*24).Day(), 00, 13, 0, 0, loc)
 
 		if startDate.Unix() <= currentTime.Unix() && currentTime.Unix() < endDate.Unix() {
 			cs.StartTime = startTime[1]
@@ -390,15 +389,14 @@ func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEv
 
 func httpServer(cancelChan chan<- os.Signal) {
 	http.HandleFunc("/view/cover", func(w http.ResponseWriter, r *http.Request) {
-		if !r.URL.Query().Has("location-id") || !r.URL.Query().Has("room-id") || !r.URL.Query().Has("group-id") {
+		if !r.URL.Query().Has("location-id") || !r.URL.Query().Has("room-id") {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("location-id, group-id, and room-id must be provided"))
+			w.Write([]byte("location-id, and room-id must be provided"))
 			return
 		}
 
 		definiteEvents, _ := GetBookingEventDetails(DefiniteEventSearchRequest{
 			LocationId:                r.URL.Query().Get("location-id"),
-			FunctionRoomGroupId:       r.URL.Query().Get("group-id"),
 			BookingEventDateTimeBegin: time.Now().Format("2006-01-02"),
 			BookingEventDateTimeEnd:   time.Now().AddDate(0, 0, 1).Format("2006-01-02"),
 		})
@@ -563,7 +561,6 @@ func GetLocationsByExternalID() ([]LocationResponse, error) {
 }
 
 func GetFunctionRoomGroup(IDs []string) ([]FunctionRoomGroupsResponse, error) {
-
 	if len(IDs) == 0 {
 		return nil, errors.New("empty array")
 	}
@@ -1006,7 +1003,7 @@ func loadJSONMapping() ([]RoomGroups, error) {
 	// log.Print(roomGroups)
 
 	for _, roomGroup := range roomGroups {
-		apiCache.Set("RoomGroupsByExternalID:"+roomGroup.RoomGroup, roomGroup, cache.NoExpiration)
+		apiCache.Set("RoomGroupByGroupName:"+roomGroup.RoomGroup, roomGroup, cache.NoExpiration)
 	}
 	if err != nil {
 		fmt.Println(err)
