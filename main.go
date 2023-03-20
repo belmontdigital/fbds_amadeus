@@ -302,10 +302,19 @@ func scheduleView(w http.ResponseWriter, definiteEvents []DefiniteEventSearchRes
 		}
 
 		re := regexp.MustCompile("T(.*:.*):.*$")
+		layout1 := "15:04"
 		startTime := re.FindStringSubmatch(event.StartDateTime)
 		endTime := re.FindStringSubmatch(event.EndDateTime)
-		event.StartDateTime = startTime[1]
-		event.EndDateTime = endTime[1]
+		start24Hr, err := time.Parse(layout1, startTime[1])
+		if err != nil {
+			LogError(err)
+		}
+		end24Hr, err := time.Parse(layout1, endTime[1])
+		if err != nil {
+			LogError(err)
+		}
+		event.StartDateTime = start24Hr.Format("03:04 PM")
+		event.EndDateTime = end24Hr.Format("03:04 PM")
 		events[event.BookingPostAs] = append(events[event.BookingPostAs], event)
 	}
 	for _, v := range events {
@@ -378,8 +387,18 @@ func coverView(w http.ResponseWriter, roomId string, definiteEvents []DefiniteEv
 		// 	time.Now().Add(time.Hour*24).Day(), 00, 13, 0, 0, loc)
 
 		if startDate.Unix() <= currentTime.Unix() && currentTime.Unix() < endDate.Unix() {
-			cs.StartTime = startTime[1]
-			cs.EndTime = endTime[1]
+			start24Hr, err := time.Parse("15:04", startTime[1])
+			if err != nil {
+				LogError(err)
+			}
+
+			end24Hr, err := time.Parse("15:04", endTime[1])
+			if err != nil {
+				LogError(err)
+			}
+
+			cs.StartTime = start24Hr.Format("03:04 PM")
+			cs.EndTime = end24Hr.Format("03:04 PM")
 			cs.EventName = event.Name
 		}
 	}
@@ -535,7 +554,6 @@ func GetLocationsbyID() ([]LocationResponse, error) {
 }
 
 func GetLocationsByExternalID() ([]LocationResponse, error) {
-
 	if cacheLevel == CacheLevelAll {
 		cached, expiresAt, found := apiCache.GetWithExpiration("LocationsByExternalID")
 		if found {

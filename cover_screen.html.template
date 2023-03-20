@@ -12,14 +12,14 @@ Amadeus Project December 2022
 
 <!--- CSS --->
 <style>
-	
+
 :root {
 	--default-text-color: #a8a9ab;
 	--default-white: #ffffff;
 	--pink-color: #eb0292;
 	--default-black: #000000;
 	--dark-grey: #58595b;
-}	
+}
 
 html, body{ font-family: 'Mukta', sans-serif; color: var(--default-text-color); font-size: 100%; margin: 0; padding: 0; background-color: var(--default-black);}
 
@@ -41,7 +41,7 @@ footer{ background: var(--dark-grey); padding: 1rem 0; position: fixed; bottom: 
 @media all and (max-width: 1024px){
 	section.title_section{ position: relative; top: auto; margin-top: 3rem;}
 	footer{ position: relative; bottom: auto; left: auto; margin-top: 3rem;}
-	
+
 	h1{ font-size: 4rem;}
 	h2{ font-size: 2rem;}
 	.footer_date_time span{ font-size: 1rem;}
@@ -52,7 +52,7 @@ footer{ background: var(--dark-grey); padding: 1rem 0; position: fixed; bottom: 
 </head>
 
 <body>
-	
+
 	<main>
 		<section class="title_section">
 			<div class="wrapper">
@@ -61,7 +61,7 @@ footer{ background: var(--dark-grey); padding: 1rem 0; position: fixed; bottom: 
 			</div><!---end wrapper--->
 		</section>
 	</main>
-	
+
 	<!--- Time and Date Heading --->
 	<footer>
 		<div class="wrapper flex">
@@ -77,29 +77,32 @@ footer{ background: var(--dark-grey); padding: 1rem 0; position: fixed; bottom: 
 		let min = time.getMinutes();
 		// let sec = time.getSeconds();
 		am_pm = "AM";
-	
-		if (hour > 12) {
-			hour -= 12;
+
+		if (hour >= 12) {
 			am_pm = "PM";
+			if (hour > 12) {
+				hour -= 12;
+			}
+		}
 		}
 		if (hour == 0) {
 			hr = 12;
 			am_pm = "AM";
 		}
-	
+
 		hour = hour < 10 ? "0" + hour : hour;
 		min = min < 10 ? "0" + min : min;
 		// sec = sec < 10 ? "0" + sec : sec;
-	
+
 		let currentTime = hour + ":"
 			+ min + " " + am_pm; // + ":" + sec + " " + am_pm;
-	
+
 		document.getElementById("time").innerHTML = currentTime;
 	}
 
 	window.onload = function() {
 		const today = new Date();
-		// return date.toLocaleDateString(locale, { weekday: 'long' });   
+		// return date.toLocaleDateString(locale, { weekday: 'long' });
 		document.getElementById("date").innerHTML = today.toDateString();
 		setInterval(showTime, 1000);
 		showTime();
