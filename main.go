@@ -460,12 +460,20 @@ func GetAuthToken() string {
 		if cached, expiresAt, found := apiCache.GetWithExpiration("AccessToken"); found {
 			DebugPrint("AccessToken.string:"+cached.(string), DebugLevelVerbose)
 			DebugPrint("AccessToken.expiresAt:"+expiresAt.String(), DebugLevelVerbose)
-			authToken = cached.(string)
+			if cached.(string) != "" {
+				authToken = cached.(string)
+			} else {
+				authToken = authenticate()
+			}
 		} else {
 			if cached, expiresAt, found := apiCache.GetWithExpiration("RefreshAccessToken"); found {
 				DebugPrint("RefreshAccessToken.string:"+cached.(string), DebugLevelVerbose)
 				DebugPrint("RefreshAccessToken.expiresAt:"+expiresAt.String(), DebugLevelVerbose)
-				authToken = refreshAccessToken(cached.(string))
+				if cached.(string) != "" {
+					authToken = refreshAccessToken(cached.(string))
+				} else {
+					authToken = authenticate()
+				}
 			} else {
 				authToken = authenticate()
 			}
